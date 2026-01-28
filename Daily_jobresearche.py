@@ -275,6 +275,7 @@ def fetch_jobs() -> pd.DataFrame:
         location=JOBSPY_CONFIG["location"],
         results_wanted=JOBSPY_CONFIG["results_wanted"],
         hours_old=JOBSPY_CONFIG["hours_old"],
+        country_indeed="France",
         linkedin_fetch_description=JOBSPY_CONFIG.get("linkedin_fetch_description", False),
         description_format=JOBSPY_CONFIG.get("description_format", "markdown"),
         verbose=JOBSPY_CONFIG.get("verbose", 1),
@@ -668,21 +669,43 @@ def run_assistant_analysis(
             if run.status == "failed" and run.last_error:
                 error_code = run.last_error.code if hasattr(run.last_error, 'code') else str(run.last_error)
                 error_msg = run.last_error.message if hasattr(run.last_error, 'message') else str(run.last_error)
-                
+
+                msg = (error_msg or "").lower()
+
+                # ❌ QUOTA / BILLING → on arrête immédiatement (pas de retry)
+                if (
+                    "exceeded your current quota" in msg
+                    or "check your plan and billing" in msg
+                    or "insufficient quota" in msg
+                ):
+                    raise RuntimeError(
+                        "Quota/billing OpenAI insuffisant : "
+                        "active le billing ou augmente les limites du projet OpenAI."
+                    )
+
+                # ⏳ VRAI rate limit → retry possible
                 if error_code == "rate_limit_exceeded":
-                    # 从错误消息中提取等待时间
                     import re
                     wait_match = re.search(r"try again in ([\d.]+)s", error_msg)
                     wait_time = float(wait_match.group(1)) if wait_match else 15
-                    
+
                     if attempt < max_retries - 1:
-                        print(f"[WARN] 遇到速率限制，等待 {wait_time:.1f} 秒后重试... (尝试 {attempt+1}/{max_retries})")
-                        time.sleep(wait_time + 2)  # 多等 2 秒确保安全
+                        print(
+                            f"[WARN] Rate limit temporaire, attente {wait_time:.1f}s "
+                            f"(tentative {attempt+1}/{max_retries})"
+                        )
+                        time.sleep(wait_time + 2)
                         continue
                     else:
-                        raise RuntimeError(f"达到最大重试次数 ({max_retries})，速率限制错误: {error_msg}")
-                else:
-                    raise RuntimeError(f"Run failed: status={run.status}, error={error_code}: {error_msg}")
+                        raise RuntimeError(
+                            f"Rate limit persistant après {max_retries} tentatives: {error_msg}"
+                        )
+
+                # ❌ Autre erreur → on remonte
+                raise RuntimeError(
+                    f"Run failed: status={run.status}, error={error_code}: {error_msg}"
+                )
+
             
             if run.status != "completed":
                 raise RuntimeError(f"Run not completed: status={run.status}, last_error={run.last_error}")
@@ -1422,6 +1445,26 @@ def main():
                     f.write("\n\n")
                 
             except Exception as e:
+                error_msg = str(e)
+                error_lower = error_msg.lower()
+
+                # 🚨 QUOTA / BILLING → stop everything immediately
+                if (
+                    "quota/billing openai insuffisant" in error_lower
+                    or "check your plan and billing" in error_lower
+                    or "insufficient quota" in error_lower
+                    or "exceeded your current quota" in error_lower
+                ):
+                    print(f"[FATAL] OpenAI billing/quota error on batch {batch_num}: {error_msg}")
+
+                    # 记录失败信息
+                    with open(all_batches_file, "a", encoding="utf-8") as f:
+                        f.write("【FATAL - Billing / Quota Error】\n")
+                        f.write(f"批次: {batch_num}/{total_batches}\n")
+                        f.write(f"错误: {error_msg}\n\n")
+
+                    # ⛔ stop the loop
+                    raise  # or `break` if you prefer silent stop
                 print(f"[ERROR] 批次 {batch_num} 失败: {e}")
                 failed_batches.append({
                     "batch_num": batch_num,
