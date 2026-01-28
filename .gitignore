@@ -7,4 +7,23 @@
 **/.DS_Store
 *.pyc
 .env
-dist
+dist# Local environment
+.venv/
+.cursor/
+.vscode/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs / cache
+*.log
+*.bin
+ms_token_cache.bin
+
+# Generated outputs
+batch_data_*.txt
+consolidated_report_*.txt
+failed_batches_*.json
+prompt_sent_to_ai_*.txt
+run_error.log
